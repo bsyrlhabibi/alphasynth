@@ -1,47 +1,87 @@
 import { NextResponse } from "next/server";
-import { mockSignals } from "@/lib/data/mock";
+import { chatCompletion, type ChatMessage } from "@/lib/ai";
 
-export async function GET() {
-  const processedSignals = mockSignals.map((signal) => ({
-    ...signal,
-    analyzedAt: new Date().toISOString(),
-    patternMatch: detectPattern(signal),
-  }));
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const signals = body.signals;
 
-  return NextResponse.json({
-    agent: "Scout",
-    signals: processedSignals,
-    totalSignals: processedSignals.length,
-    timestamp: new Date().toISOString(),
-  });
-}
+    if (!signals?.length) {
+      return NextResponse.json(
+        { error: "No signals provided" },
+        { status: 400 }
+      );
+    }
 
-function detectPattern(signal: (typeof mockSignals)[number]): string[] {
-  const patterns: string[] = [];
-  const title = signal.title.toLowerCase();
-  const desc = signal.description.toLowerCase();
+    const systemPrompt = `You are AlphaSynth Scout Agent — an on-chain intelligence gathering specialist.
 
-  if (title.includes("contract") || desc.includes("deploy")) {
-    patterns.push("new-contract");
-  }
-  if (title.includes("bridge") || desc.includes("bridge")) {
-    patterns.push("bridge-activity");
-  }
-  if (title.includes("airdrop") || desc.includes("merkle")) {
-    patterns.push("airdrop-signal");
-  }
-  if (title.includes("flash") || desc.includes("flash loan")) {
-    patterns.push("flash-loan");
-  }
-  if (desc.includes("whale")) {
-    patterns.push("whale-movement");
-  }
-  if (desc.includes("deleted") || desc.includes("leak")) {
-    patterns.push("stealth-leak");
-  }
-  if (desc.includes("tornado")) {
-    patterns.push("privacy-risk");
-  }
+Given raw signal data, you must:
+1. Detect patterns across multiple signal types (on-chain, social, GitHub, docs)
+2. Identify convergent signals (different sources pointing to same opportunity)
+3. Rate confidence 0-100
+4. Return structured JSON
 
-  return patterns;
+Output strict JSON:
+{
+  "patterns": ["new-contract", "bridge-activity", "airdrop-signal", "whale-movement", "stealth-leak", "privacy-risk"],
+  "convergentSignals": 0,
+  "confidence": 0-100,
+  "conclusion": "string",
+  "tags": ["..."],
+  "reasoning": [
+    {"step": 1, "observation": "...", "inference": "...", "confidence": 0}
+  ]
+}`;
+
+    const userPrompt = `Scan these ${signals.length} signals for patterns:\n\n${
+      JSON.stringify(
+        signals.map((s: any) => ({
+          source: s.source,
+          sourceType: s.sourceType,
+          title: s.title,
+          description: s.description,
+        })),
+        null,
+        2
+      )
+    }`;
+
+    const res = await chatCompletion([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ], { temperature: 0.2, max_tokens: 1500 });
+
+    const text = res.choices[0]?.message?.content || "{}";
+    let scout;
+
+    try {
+      const clean = text.replace(/^```json\n?/i, "").replace(/\n?```$/, "").trim();
+      scout = JSON.parse(clean);
+    } catch {
+      scout = {
+        patterns: [],
+        convergentSignals: 0,
+        confidence: 50,
+        conclusion: text.slice(0, 300),
+        tags: ["parse-error"],
+        reasoning: [],
+      };
+    }
+
+    return NextResponse.json({
+      agent: "Scout",
+      signalsAnalyzed: signals.length,
+      analysis: scout,
+      aiUsage: res.usage,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    console.error("[Scout] Error:", err);
+    return NextResponse.json({
+      agent: "Scout",
+      error: err.message,
+      fallback: true,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }
